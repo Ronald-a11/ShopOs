@@ -1,0 +1,2774 @@
+openapi: 3.0.3
+info:
+  title: ShopOS API
+  version: 1.0.0
+  description: |
+    P0 REST contract for ShopOS — multi-tenant grocery/supermarket POS for Zimbabwe.
+
+    **Tenant** is always taken from the authenticated session; never from path or body.
+    **Branch** is required on every branch-owned write; list filters use `branchId` where
+    the resource is branch-scoped. The server rejects any `branchId` or `deviceId`
+    outside the caller's membership.
+
+    Money and quantities are decimal **strings** in JSON. Retryable writes carry a
+    client UUID and are safe to replay.
+  contact:
+    name: Miccs
+servers:
+  - url: /api/v1
+    description: Application-relative base path
+tags:
+  - name: identity
+    description: Users, credentials, sessions and tokens
+  - name: tenancy
+    description: Tenants and tenant settings
+  - name: branches
+    description: Branches, tills and POS devices
+  - name: catalogue
+    description: Products, barcodes, categories and CSV import
+  - name: inventory
+    description: Balances, movements, receipts and adjustments (branch-owned)
+  - name: shifts
+    description: Cashier shifts, cash movements and reconciliation
+  - name: sales
+    description: Sale commit, items, returns and voids
+  - name: reports
+    description: Read models — sales, stock valuation, tax and cash
+  - name: fiscalisation
+    description: Fiscal devices, documents, attempts and fiscal days
+  - name: synchronisation
+    description: Bootstrap, batch replay, idempotency and acknowledgements
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      tags: [identity]
+      operationId: login
+      summary: Authenticate
+      description: |
+        Branch scope: none. Returns a short-lived access token. Browser clients may
+        also receive a rotated refresh token via HttpOnly cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+          headers:
+            Set-Cookie:
+              description: Optional HttpOnly refresh token cookie for browser clients
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /auth/refresh:
+    post:
+      tags: [identity]
+      operationId: refreshSession
+      summary: Rotate session/token
+      description: |
+        Branch scope: none. Accepts refresh token from HttpOnly cookie (browser) or
+        request body (native/desktop clients).
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Tokens rotated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+          headers:
+            Set-Cookie:
+              description: Rotated HttpOnly refresh token cookie
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /auth/logout:
+    post:
+      tags: [identity]
+      operationId: logout
+      summary: Revoke session
+      description: "Branch scope: none. Revokes the current refresh session."
+      responses:
+        '204':
+          description: Session revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /me:
+    get:
+      tags: [identity]
+      operationId: getMe
+      summary: Current user and memberships
+      description: |
+        Branch scope: none on the request. Response includes memberships with
+        accessible `branchIds` for branch selection on the till.
+      responses:
+        '200':
+          description: Current principal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /tenants:
+    post:
+      tags: [tenancy]
+      operationId: createTenant
+      summary: Create business
+      description: |
+        Branch scope: none. Creates a tenant. The first branch is created afterwards
+        via `POST /branches`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTenantRequest'
+      responses:
+        '201':
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /tenants/current:
+    get:
+      tags: [tenancy]
+      operationId: getCurrentTenant
+      summary: Read current tenant settings
+      description: "Branch scope: none. Tenant is derived from the token."
+      responses:
+        '200':
+          description: Current tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/Problem'
+    patch:
+      tags: [tenancy]
+      operationId: updateCurrentTenant
+      summary: Update allowed tenant settings
+      description: "Branch scope: none. Tenant is derived from the token; body must not contain tenantId."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTenantRequest'
+      responses:
+        '200':
+          description: Updated tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /branches:
+    get:
+      tags: [branches]
+      operationId: listBranches
+      summary: List accessible branches
+      description: "Branch scope: returns only branches the caller may access."
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/size'
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          description: Branch page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BranchPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      tags: [branches]
+      operationId: createBranch
+      summary: Create branch
+      description: "Branch scope: creates a new branch under the current tenant."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBranchRequest'
+      responses:
+        '201':
+          description: Branch created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /branches/{branchId}:
+    parameters:
+      - $ref: '#/components/parameters/branchIdPath'
+    get:
+      tags: [branches]
+      operationId: getBranch
+      summary: Read branch
+      description: "Branch scope: path `branchId`."
+      responses:
+        '200':
+          description: Branch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+    patch:
+      tags: [branches]
+      operationId: updateBranch
+      summary: Update branch
+      description: "Branch scope: path `branchId`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBranchRequest'
+      responses:
+        '200':
+          description: Updated branch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /branches/{branchId}/devices:
+    parameters:
+      - $ref: '#/components/parameters/branchIdPath'
+    get:
+      tags: [branches]
+      operationId: listBranchDevices
+      summary: List tills and devices
+      description: "Branch scope: path `branchId`."
+      responses:
+        '200':
+          description: Devices for the branch
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PosDevice'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      tags: [branches]
+      operationId: registerBranchDevice
+      summary: Register till / POS device
+      description: |
+        Branch scope: path `branchId`. Minimal P0 registration route for till binding
+        and sync device identity (implied by sync/device flows).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterDeviceRequest'
+      responses:
+        '201':
+          description: Device registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PosDevice'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /products:
+    get:
+      tags: [catalogue]
+      operationId: searchProducts
+      summary: Search and paginate products
+      description: |
+        Branch scope: tenant-global. Catalogue is shared across branches.
+        P0 does not accept `branchId` for stock-aware search.
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Free-text search (SKU, name, barcode)
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/size'
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          description: Product page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      tags: [catalogue]
+      operationId: createProduct
+      summary: Create product
+      description: "Branch scope: tenant-global."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+      responses:
+        '201':
+          description: Product created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /products/{id}:
+    parameters:
+      - $ref: '#/components/parameters/productIdPath'
+    get:
+      tags: [catalogue]
+      operationId: getProduct
+      summary: Read product
+      description: "Branch scope: tenant-global."
+      responses:
+        '200':
+          description: Product
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+    patch:
+      tags: [catalogue]
+      operationId: updateProduct
+      summary: Update product
+      description: "Branch scope: tenant-global."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductRequest'
+      responses:
+        '200':
+          description: Updated product
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /products/import:
+    post:
+      tags: [catalogue]
+      operationId: importProducts
+      summary: Validated CSV import
+      description: "Branch scope: tenant-global."
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV of products and barcodes
+      responses:
+        '200':
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductImportResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /products/barcode/{barcode}:
+    get:
+      tags: [catalogue]
+      operationId: lookupProductByBarcode
+      summary: Barcode lookup
+      description: "Branch scope: tenant-global. Pack barcodes may carry a unit multiplier."
+      parameters:
+        - name: barcode
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product resolved from barcode
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BarcodeLookupResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /branches/{branchId}/inventory:
+    get:
+      tags: [inventory]
+      operationId: listBranchInventory
+      summary: Stock balances for a branch
+      description: "Branch scope: path `branchId` (always branch-owned)."
+      parameters:
+        - $ref: '#/components/parameters/branchIdPath'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/size'
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          description: Inventory balance page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryBalancePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /inventory/receipts:
+    post:
+      tags: [inventory]
+      operationId: receiveGoods
+      summary: Receive goods
+      description: "Branch scope: body `branchId` required."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryReceiptRequest'
+      responses:
+        '201':
+          description: Receipt recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryReceiptResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /inventory/adjustments:
+    post:
+      tags: [inventory]
+      operationId: adjustInventory
+      summary: Authorised stock adjustment
+      description: "Branch scope: body `branchId` required. Manager approval with reason."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryAdjustmentRequest'
+      responses:
+        '201':
+          description: Adjustment recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryAdjustmentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /inventory/movements:
+    get:
+      tags: [inventory]
+      operationId: listInventoryMovements
+      summary: Movement history
+      description: "Branch scope: query `branchId` required."
+      parameters:
+        - $ref: '#/components/parameters/branchIdQueryRequired'
+        - name: productId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/size'
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          description: Movement page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryMovementPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /inventory/low-stock:
+    get:
+      tags: [inventory]
+      operationId: listLowStock
+      summary: Reorder candidates
+      description: "Branch scope: query `branchId` required."
+      parameters:
+        - $ref: '#/components/parameters/branchIdQueryRequired'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/size'
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          description: Low-stock page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryBalancePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /shifts/open:
+    post:
+      tags: [shifts]
+      operationId: openShift
+      summary: Open cashier shift
+      description: |
+        Branch scope: body `branchId` and `deviceId` required. One open shift per
+        cashier per device.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenShiftRequest'
+      responses:
+        '201':
+          description: Shift opened
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashierShift'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /shifts/{id}/cash-movements:
+    post:
+      tags: [shifts]
+      operationId: recordCashMovement
+      summary: Record cash paid in/out or drop
+      description: "Branch scope: inferred from the shift."
+      parameters:
+        - $ref: '#/components/parameters/shiftIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CashMovementRequest'
+      responses:
+        '201':
+          description: Cash movement recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashMovement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /shifts/{id}/close:
+    post:
+      tags: [shifts]
+      operationId: closeShift
+      summary: Reconcile and close shift
+      description: |
+        Branch scope: inferred from the shift. Cashier submits counted cash; server
+        computes variance; supervisor approval may be required.
+      parameters:
+        - $ref: '#/components/parameters/shiftIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloseShiftRequest'
+      responses:
+        '200':
+          description: Shift closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashierShift'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /sales:
+    post:
+      tags: [sales]
+      operationId: commitSale
+      summary: Commit a sale
+      description: |
+        Branch scope: body `branchId` and `deviceId` required. Idempotent on
+        `(tenant, deviceId, clientSaleId)`. Client sends scanned items and tenders;
+        server derives prices, tax, tenant and totals. A 201 means the sale is
+        committed, not that FDMS accepted it — read `fiscal.status` before printing
+        a fiscal receipt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitSaleRequest'
+            example:
+              clientSaleId: 0f7d6f8d-8dbe-49e7-ae88-49b9f390ef10
+              branchId: 11111111-1111-1111-1111-111111111111
+              deviceId: 22222222-2222-2222-2222-222222222222
+              occurredAt: '2026-10-29T09:30:00Z'
+              configVersion: 42
+              currency: USD
+              items:
+                - productId: 33333333-3333-3333-3333-333333333333
+                  quantity: '2'
+              payments:
+                - method: CASH
+                  currency: USD
+                  amount: '5.00'
+      responses:
+        '201':
+          description: Sale committed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitSaleResponse'
+        '200':
+          description: Idempotent replay of an existing sale
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitSaleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+    get:
+      tags: [sales]
+      operationId: searchSales
+      summary: Search sales
+      description: |
+        Branch scope: query `branchId` required for CASHIER. Managers and above may
+        omit it to search across accessible branches.
+      parameters:
+        - $ref: '#/components/parameters/branchIdQueryOptional'
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: cashierUserId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/size'
+        - $ref: '#/components/parameters/sort'
+      responses:
+        '200':
+          description: Sale page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /sales/{id}:
+    get:
+      tags: [sales]
+      operationId: getSale
+      summary: Retrieve a sale
+      description: "Branch scope: inferred from the sale; must match tenant."
+      parameters:
+        - $ref: '#/components/parameters/saleIdPath'
+      responses:
+        '200':
+          description: Sale
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /sales/{id}/returns:
+    post:
+      tags: [sales]
+      operationId: initiateReturn
+      summary: Initiate authorised return
+      description: "Branch scope: inferred from the original sale. Supervisor approval where required."
+      parameters:
+        - $ref: '#/components/parameters/saleIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReturnSaleRequest'
+      responses:
+        '201':
+          description: Return created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /sales/{id}/void-request:
+    post:
+      tags: [sales]
+      operationId: requestVoid
+      summary: Request an allowed void or reversal
+      description: "Branch scope: inferred from the original sale. Supervisor approval where required."
+      parameters:
+        - $ref: '#/components/parameters/saleIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoidSaleRequest'
+      responses:
+        '201':
+          description: Void or reversal recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /reports/sales:
+    get:
+      tags: [reports]
+      operationId: reportSales
+      summary: Sales totals by date, branch and cashier
+      description: "Branch scope: query `branchId` optional for multi-branch roles."
+      parameters:
+        - $ref: '#/components/parameters/branchIdQueryOptional'
+        - $ref: '#/components/parameters/fromRequired'
+        - $ref: '#/components/parameters/toRequired'
+        - name: cashierUserId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Sales report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /reports/stock-valuation:
+    get:
+      tags: [reports]
+      operationId: reportStockValuation
+      summary: Stock valuation
+      description: |
+        Branch scope: query `branchId` required for single-branch roles; multi-branch
+        roles may omit for an aggregate across accessible branches.
+      parameters:
+        - $ref: '#/components/parameters/branchIdQueryOptional'
+      responses:
+        '200':
+          description: Stock valuation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockValuationReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /reports/cash-reconciliation:
+    get:
+      tags: [reports]
+      operationId: reportCashReconciliation
+      summary: Shift cash reconciliation
+      description: "Branch scope: query `branchId`; optional `shiftId`."
+      parameters:
+        - $ref: '#/components/parameters/branchIdQueryOptional'
+        - name: shiftId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/fromOptional'
+        - $ref: '#/components/parameters/toOptional'
+      responses:
+        '200':
+          description: Cash reconciliation report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashReconciliationReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /reports/tax-summary:
+    get:
+      tags: [reports]
+      operationId: reportTaxSummary
+      summary: Tax by configured classification
+      description: "Branch scope: query `branchId` optional for multi-branch roles."
+      parameters:
+        - $ref: '#/components/parameters/branchIdQueryOptional'
+        - $ref: '#/components/parameters/fromRequired'
+        - $ref: '#/components/parameters/toRequired'
+      responses:
+        '200':
+          description: Tax summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaxSummaryReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /fiscal/devices:
+    get:
+      tags: [fiscalisation]
+      operationId: listFiscalDevices
+      summary: List fiscal device configuration
+      description: "Branch scope: optional query `branchId`."
+      parameters:
+        - $ref: '#/components/parameters/branchIdQueryOptional'
+      responses:
+        '200':
+          description: Fiscal devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FiscalDevice'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+    post:
+      tags: [fiscalisation]
+      operationId: registerFiscalDevice
+      summary: Register fiscal device configuration
+      description: "Branch scope: body `branchId` required."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterFiscalDeviceRequest'
+      responses:
+        '201':
+          description: Fiscal device registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiscalDevice'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /fiscal/documents/{id}:
+    get:
+      tags: [fiscalisation]
+      operationId: getFiscalDocument
+      summary: Fiscal document status
+      description: "Branch scope: inferred from the document."
+      parameters:
+        - $ref: '#/components/parameters/fiscalDocumentIdPath'
+      responses:
+        '200':
+          description: Fiscal document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiscalDocument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /fiscal/documents/{id}/retry:
+    post:
+      tags: [fiscalisation]
+      operationId: retryFiscalDocument
+      summary: Retry an eligible failed or pending submission
+      description: "Branch scope: inferred from the document."
+      parameters:
+        - $ref: '#/components/parameters/fiscalDocumentIdPath'
+      responses:
+        '202':
+          description: Retry accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiscalDocument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /fiscal/credit-notes:
+    post:
+      tags: [fiscalisation]
+      operationId: createCreditNote
+      summary: Create fiscal credit note
+      description: "Branch scope: inferred from referenced sale."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FiscalNoteRequest'
+      responses:
+        '201':
+          description: Credit note created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiscalDocument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /fiscal/debit-notes:
+    post:
+      tags: [fiscalisation]
+      operationId: createDebitNote
+      summary: Create fiscal debit note
+      description: "Branch scope: inferred from referenced sale."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FiscalNoteRequest'
+      responses:
+        '201':
+          description: Debit note created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiscalDocument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /fiscal/days/open:
+    post:
+      tags: [fiscalisation]
+      operationId: openFiscalDay
+      summary: Open fiscal day
+      description: "Branch scope: body `branchId` required (+ device as protocol needs)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FiscalDayRequest'
+      responses:
+        '201':
+          description: Fiscal day opened
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiscalDaySession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /fiscal/days/close:
+    post:
+      tags: [fiscalisation]
+      operationId: closeFiscalDay
+      summary: Close fiscal day
+      description: "Branch scope: body `branchId` required."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FiscalDayRequest'
+      responses:
+        '200':
+          description: Fiscal day closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiscalDaySession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /fiscal/health:
+    get:
+      tags: [fiscalisation]
+      operationId: fiscalHealth
+      summary: Integration status and pending work
+      description: "Branch scope: optional query `branchId`."
+      parameters:
+        - $ref: '#/components/parameters/branchIdQueryOptional'
+      responses:
+        '200':
+          description: Fiscal health
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FiscalHealth'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /sync/bootstrap:
+    get:
+      tags: [synchronisation]
+      operationId: syncBootstrap
+      summary: Download authorised catalogue and settings
+      description: |
+        Branch scope: device-bound. Query `deviceId` required; branch is taken from
+        the device's registration.
+      parameters:
+        - name: deviceId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Bootstrap payload for the device's branch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncBootstrapResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /sync/batch:
+    post:
+      tags: [synchronisation]
+      operationId: syncBatch
+      summary: Submit device operations
+      description: |
+        Branch scope: each operation carries `branchId`/`deviceId`; server validates
+        membership. Returns a per-operation acknowledgement. Replays are idempotent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncBatchRequest'
+      responses:
+        '200':
+          description: Per-operation outcomes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncBatchResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /sync/operations/{id}:
+    get:
+      tags: [synchronisation]
+      operationId: getSyncOperation
+      summary: Check one operation's result
+      description: "Branch scope: inferred from the operation."
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Sync operation id (client operation UUID)
+      responses:
+        '200':
+          description: Operation outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncOperationResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Problem'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived access token. Refresh via POST /auth/refresh (HttpOnly cookie for browsers).
+
+  parameters:
+    page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    size:
+      name: size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 20
+    sort:
+      name: sort
+      in: query
+      schema:
+        type: string
+      description: Sort field and direction, e.g. `occurredAt,desc`
+    branchIdPath:
+      name: branchId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    branchIdQueryRequired:
+      name: branchId
+      in: query
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Branch filter (required)
+    branchIdQueryOptional:
+      name: branchId
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: Branch filter (optional for multi-branch roles)
+    productIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    shiftIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    saleIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    fiscalDocumentIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    fromRequired:
+      name: from
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    toRequired:
+      name: to
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    fromOptional:
+      name: from
+      in: query
+      schema:
+        type: string
+        format: date-time
+    toOptional:
+      name: to
+      in: query
+      schema:
+        type: string
+        format: date-time
+
+  responses:
+    Problem:
+      description: RFC 7807 problem details
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    Unauthorized:
+      description: Not authenticated
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    Forbidden:
+      description: Authenticated but not permitted
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    NotFound:
+      description: Resource not found in this tenant
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    Conflict:
+      description: Conflict (state, stock, duplicate, etc.)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    UnprocessableEntity:
+      description: Validation failed
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+
+  schemas:
+    Money:
+      type: string
+      description: Decimal money as a string (no floating point)
+      pattern: '^-?\d+(\.\d{1,4})?$'
+      example: '5.00'
+
+    Quantity:
+      type: string
+      description: Decimal quantity as a string
+      pattern: '^-?\d+(\.\d{1,4})?$'
+      example: '2'
+
+    CurrencyCode:
+      type: string
+      description: ISO 4217 currency code
+      minLength: 3
+      maxLength: 3
+      example: USD
+
+    ProblemDetail:
+      type: object
+      required: [type, title, status, code, detail, traceId]
+      properties:
+        type:
+          type: string
+          format: uri
+          example: "https://docs.shopos.co.zw/errors/insufficient-stock"
+        title:
+          type: string
+          example: Insufficient stock
+        status:
+          type: integer
+          example: 409
+        code:
+          type: string
+          example: INSUFFICIENT_STOCK
+        detail:
+          type: string
+          example: SKU 6001234 has 1 on hand; 2 requested
+        traceId:
+          type: string
+          example: c1f9a2b3c4d5
+
+    PageMeta:
+      type: object
+      required: [page, size, totalElements]
+      properties:
+        page:
+          type: integer
+        size:
+          type: integer
+        totalElements:
+          type: integer
+          format: int64
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        deviceId:
+          type: string
+          format: uuid
+          description: Optional till device binding on login
+        keepSignedIn:
+          type: boolean
+          default: false
+
+    RefreshRequest:
+      type: object
+      properties:
+        refreshToken:
+          type: string
+          description: Required for non-cookie clients; omit when using HttpOnly cookie
+
+    LoginResponse:
+      type: object
+      required: [accessToken, expiresIn, tokenType, user]
+      properties:
+        accessToken:
+          type: string
+        expiresIn:
+          type: integer
+          description: Seconds until access token expiry
+        tokenType:
+          type: string
+          enum: [Bearer]
+        refreshToken:
+          type: string
+          description: Present for native clients; browser clients use HttpOnly cookie
+        user:
+          $ref: '#/components/schemas/MeResponse'
+
+    MeResponse:
+      type: object
+      required: [id, email, displayName, memberships]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/Membership'
+
+    Membership:
+      type: object
+      required: [tenantId, role, branchIds]
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        tenantName:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        branchIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Branches this membership may access
+
+    Role:
+      type: string
+      enum: [OWNER, ADMIN, MANAGER, SUPERVISOR, CASHIER, STOCK_CONTROLLER]
+
+    CreateTenantRequest:
+      type: object
+      required: [name, defaultCurrency]
+      properties:
+        name:
+          type: string
+        defaultCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        displayTimezone:
+          type: string
+          default: Africa/Harare
+
+    UpdateTenantRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        defaultCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        displayTimezone:
+          type: string
+
+    Tenant:
+      type: object
+      required: [id, name, defaultCurrency, displayTimezone]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        defaultCurrency:
+          $ref: '#/components/schemas/CurrencyCode'
+        displayTimezone:
+          type: string
+
+    CreateBranchRequest:
+      type: object
+      required: [code, name]
+      properties:
+        code:
+          type: string
+          example: HRE01
+        name:
+          type: string
+        address:
+          type: string
+
+    UpdateBranchRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        active:
+          type: boolean
+
+    Branch:
+      type: object
+      required: [id, code, name, active]
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        active:
+          type: boolean
+
+    BranchPage:
+      type: object
+      required: [content, page]
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/Branch'
+        page:
+          $ref: '#/components/schemas/PageMeta'
+
+    RegisterDeviceRequest:
+      type: object
+      required: [name, platform]
+      properties:
+        name:
+          type: string
+        platform:
+          $ref: '#/components/schemas/DevicePlatform'
+        externalSerial:
+          type: string
+
+    DevicePlatform:
+      type: string
+      enum: [WINDOWS, ANDROID, ANDROID_HANDHELD, WEB]
+
+    PosDevice:
+      type: object
+      required: [id, branchId, name, platform, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        platform:
+          $ref: '#/components/schemas/DevicePlatform'
+        externalSerial:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+
+    CreateProductRequest:
+      type: object
+      required: [sku, name, taxCode]
+      properties:
+        sku:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        taxCode:
+          type: string
+        unitPrice:
+          $ref: '#/components/schemas/Money'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        barcodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductBarcodeInput'
+
+    UpdateProductRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        taxCode:
+          type: string
+        unitPrice:
+          $ref: '#/components/schemas/Money'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        active:
+          type: boolean
+        barcodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductBarcodeInput'
+
+    ProductBarcodeInput:
+      type: object
+      required: [barcode, unitMultiplier]
+      properties:
+        barcode:
+          type: string
+        unitMultiplier:
+          $ref: '#/components/schemas/Quantity'
+
+    Product:
+      type: object
+      required: [id, sku, name, taxCode, active]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        taxCode:
+          type: string
+        unitPrice:
+          $ref: '#/components/schemas/Money'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        active:
+          type: boolean
+        barcodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductBarcode'
+
+    ProductBarcode:
+      type: object
+      required: [barcode, unitMultiplier]
+      properties:
+        barcode:
+          type: string
+        unitMultiplier:
+          $ref: '#/components/schemas/Quantity'
+
+    ProductPage:
+      type: object
+      required: [content, page]
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+        page:
+          $ref: '#/components/schemas/PageMeta'
+
+    ProductImportResult:
+      type: object
+      required: [created, updated, errors]
+      properties:
+        created:
+          type: integer
+        updated:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            required: [row, message]
+            properties:
+              row:
+                type: integer
+              message:
+                type: string
+
+    BarcodeLookupResponse:
+      type: object
+      required: [product, unitMultiplier]
+      properties:
+        product:
+          $ref: '#/components/schemas/Product'
+        unitMultiplier:
+          $ref: '#/components/schemas/Quantity'
+        barcode:
+          type: string
+
+    InventoryBalance:
+      type: object
+      required: [branchId, productId, quantity]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        quantity:
+          $ref: '#/components/schemas/Quantity'
+        reorderLevel:
+          $ref: '#/components/schemas/Quantity'
+
+    InventoryBalancePage:
+      type: object
+      required: [content, page]
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryBalance'
+        page:
+          $ref: '#/components/schemas/PageMeta'
+
+    InventoryLineInput:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          $ref: '#/components/schemas/Quantity'
+
+    InventoryReceiptRequest:
+      type: object
+      required: [branchId, clientOperationId, lines]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        clientOperationId:
+          type: string
+          format: uuid
+          description: Idempotency key
+        reason:
+          type: string
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/InventoryLineInput'
+
+    InventoryReceiptResponse:
+      type: object
+      required: [receiptId, branchId, movements]
+      properties:
+        receiptId:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        movements:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryMovement'
+
+    InventoryAdjustmentRequest:
+      type: object
+      required: [branchId, clientOperationId, reason, lines]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        clientOperationId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          minLength: 1
+        movementType:
+          type: string
+          enum: [ADJUSTMENT, WASTAGE]
+          default: ADJUSTMENT
+        lines:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [productId, quantityDelta]
+            properties:
+              productId:
+                type: string
+                format: uuid
+              quantityDelta:
+                $ref: '#/components/schemas/Quantity'
+                description: Non-zero signed delta
+
+    InventoryAdjustmentResponse:
+      type: object
+      required: [adjustmentId, branchId, movements]
+      properties:
+        adjustmentId:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        movements:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryMovement'
+
+    InventoryMovement:
+      type: object
+      required: [id, branchId, productId, movementType, quantityDelta, occurredAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        movementType:
+          type: string
+          enum: [OPENING, RECEIPT, SALE, RETURN, WASTAGE, ADJUSTMENT, TRANSFER_OUT, TRANSFER_IN]
+        quantityDelta:
+          $ref: '#/components/schemas/Quantity'
+        referenceType:
+          type: string
+        referenceId:
+          type: string
+          format: uuid
+        occurredAt:
+          type: string
+          format: date-time
+
+    InventoryMovementPage:
+      type: object
+      required: [content, page]
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryMovement'
+        page:
+          $ref: '#/components/schemas/PageMeta'
+
+    OpenShiftRequest:
+      type: object
+      required: [branchId, deviceId, openingFloat, currency]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        deviceId:
+          type: string
+          format: uuid
+        openingFloat:
+          $ref: '#/components/schemas/Money'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        clientOperationId:
+          type: string
+          format: uuid
+
+    CashMovementRequest:
+      type: object
+      required: [type, amount, currency]
+      properties:
+        type:
+          type: string
+          enum: [PAID_IN, PAID_OUT, DROP]
+        amount:
+          $ref: '#/components/schemas/Money'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        reason:
+          type: string
+        clientOperationId:
+          type: string
+          format: uuid
+
+    CashMovement:
+      type: object
+      required: [id, shiftId, type, amount, currency, occurredAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        shiftId:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [PAID_IN, PAID_OUT, DROP]
+        amount:
+          $ref: '#/components/schemas/Money'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        reason:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+
+    CloseShiftRequest:
+      type: object
+      required: [countedCash]
+      properties:
+        countedCash:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [currency, amount]
+            properties:
+              currency:
+                $ref: '#/components/schemas/CurrencyCode'
+              amount:
+                $ref: '#/components/schemas/Money'
+        approvalReason:
+          type: string
+          description: Required when supervisor approval is needed for variance
+        clientOperationId:
+          type: string
+          format: uuid
+
+    CashierShift:
+      type: object
+      required: [id, branchId, deviceId, cashierUserId, status, openedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        deviceId:
+          type: string
+          format: uuid
+        cashierUserId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [OPEN, COUNTED, CLOSED]
+        openingFloat:
+          $ref: '#/components/schemas/Money'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        expectedCash:
+          $ref: '#/components/schemas/Money'
+        countedCash:
+          $ref: '#/components/schemas/Money'
+        variance:
+          $ref: '#/components/schemas/Money'
+        openedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+
+    CommitSaleRequest:
+      type: object
+      required: [clientSaleId, branchId, deviceId, occurredAt, configVersion, currency, items, payments]
+      properties:
+        clientSaleId:
+          type: string
+          format: uuid
+          description: Idempotency key scoped to tenant + device
+        branchId:
+          type: string
+          format: uuid
+        deviceId:
+          type: string
+          format: uuid
+        occurredAt:
+          type: string
+          format: date-time
+        configVersion:
+          type: integer
+          description: Catalogue/config version the till used when building the basket
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SaleItemInput'
+        payments:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SalePaymentInput'
+
+    SaleItemInput:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          $ref: '#/components/schemas/Quantity'
+        approvedDiscount:
+          $ref: '#/components/schemas/Money'
+          description: Only approved discounts; supervisor approval where required
+
+    SalePaymentInput:
+      type: object
+      required: [method, currency, amount]
+      properties:
+        method:
+          type: string
+          enum: [CASH, CARD, MOBILE_MONEY, VOUCHER, OTHER]
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        amount:
+          $ref: '#/components/schemas/Money'
+        providerReference:
+          type: string
+          description: Approval code / acquirer reference for CARD; never full PAN
+        terminalId:
+          type: string
+        cardScheme:
+          type: string
+        maskedPanLast4:
+          type: string
+          pattern: '^\d{4}$'
+
+    CommitSaleResponse:
+      type: object
+      required: [saleId, receiptNumber, replayed, totals, inventory, fiscal]
+      properties:
+        saleId:
+          type: string
+          format: uuid
+        receiptNumber:
+          type: string
+          example: HRE01-000123
+        replayed:
+          type: boolean
+        totals:
+          $ref: '#/components/schemas/SaleTotals'
+        change:
+          $ref: '#/components/schemas/Money'
+        inventory:
+          type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [APPLIED, PENDING_REVIEW]
+        fiscal:
+          type: object
+          required: [status]
+          properties:
+            status:
+              $ref: '#/components/schemas/FiscalDocumentStatus'
+            documentId:
+              type: string
+              format: uuid
+
+    SaleTotals:
+      type: object
+      required: [subtotal, discountTotal, taxTotal, grandTotal]
+      properties:
+        subtotal:
+          $ref: '#/components/schemas/Money'
+        discountTotal:
+          $ref: '#/components/schemas/Money'
+        taxTotal:
+          $ref: '#/components/schemas/Money'
+        grandTotal:
+          $ref: '#/components/schemas/Money'
+
+    Sale:
+      type: object
+      required: [id, branchId, deviceId, receiptNumber, status, currency, occurredAt, totals, items, payments]
+      properties:
+        id:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        deviceId:
+          type: string
+          format: uuid
+        clientSaleId:
+          type: string
+          format: uuid
+        receiptNumber:
+          type: string
+        status:
+          type: string
+          enum: [COMMITTED, RETURNED, VOIDED, PARTIALLY_RETURNED]
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        occurredAt:
+          type: string
+          format: date-time
+        cashierUserId:
+          type: string
+          format: uuid
+        shiftId:
+          type: string
+          format: uuid
+        totals:
+          $ref: '#/components/schemas/SaleTotals'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SaleItem'
+        payments:
+          type: array
+          items:
+            $ref: '#/components/schemas/SalePayment'
+        fiscal:
+          type: object
+          properties:
+            status:
+              $ref: '#/components/schemas/FiscalDocumentStatus'
+            documentId:
+              type: string
+              format: uuid
+
+    SaleItem:
+      type: object
+      required: [productId, sku, description, quantity, unitPrice, taxCode, lineTotal]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        description:
+          type: string
+        quantity:
+          $ref: '#/components/schemas/Quantity'
+        unitPrice:
+          $ref: '#/components/schemas/Money'
+        taxCode:
+          type: string
+        discount:
+          $ref: '#/components/schemas/Money'
+        lineTotal:
+          $ref: '#/components/schemas/Money'
+
+    SalePayment:
+      type: object
+      required: [method, currency, amount]
+      properties:
+        method:
+          type: string
+          enum: [CASH, CARD, MOBILE_MONEY, VOUCHER, OTHER]
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        amount:
+          $ref: '#/components/schemas/Money'
+        providerReference:
+          type: string
+        terminalId:
+          type: string
+        cardScheme:
+          type: string
+        maskedPanLast4:
+          type: string
+
+    SalePage:
+      type: object
+      required: [content, page]
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/Sale'
+        page:
+          $ref: '#/components/schemas/PageMeta'
+
+    ReturnSaleRequest:
+      type: object
+      required: [clientOperationId, reason, lines]
+      properties:
+        clientOperationId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          minLength: 1
+        lines:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [productId, quantity]
+            properties:
+              productId:
+                type: string
+                format: uuid
+              quantity:
+                $ref: '#/components/schemas/Quantity'
+
+    VoidSaleRequest:
+      type: object
+      required: [clientOperationId, reason]
+      properties:
+        clientOperationId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          minLength: 1
+
+    SalesReport:
+      type: object
+      required: [from, to, currency, grandTotal, saleCount, lines]
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        branchId:
+          type: string
+          format: uuid
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        grandTotal:
+          $ref: '#/components/schemas/Money'
+        saleCount:
+          type: integer
+        lines:
+          type: array
+          items:
+            type: object
+            required: [label, saleCount, grandTotal]
+            properties:
+              branchId:
+                type: string
+                format: uuid
+              cashierUserId:
+                type: string
+                format: uuid
+              label:
+                type: string
+              saleCount:
+                type: integer
+              grandTotal:
+                $ref: '#/components/schemas/Money'
+
+    StockValuationReport:
+      type: object
+      required: [currency, totalValue, lines]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        totalValue:
+          $ref: '#/components/schemas/Money'
+        lines:
+          type: array
+          items:
+            type: object
+            required: [productId, quantity, unitValue, lineValue]
+            properties:
+              productId:
+                type: string
+                format: uuid
+              sku:
+                type: string
+              quantity:
+                $ref: '#/components/schemas/Quantity'
+              unitValue:
+                $ref: '#/components/schemas/Money'
+              lineValue:
+                $ref: '#/components/schemas/Money'
+
+    CashReconciliationReport:
+      type: object
+      required: [lines]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        lines:
+          type: array
+          items:
+            type: object
+            required: [shiftId, status, currency, expectedCash, countedCash, variance]
+            properties:
+              shiftId:
+                type: string
+                format: uuid
+              status:
+                type: string
+                enum: [OPEN, COUNTED, CLOSED]
+              currency:
+                $ref: '#/components/schemas/CurrencyCode'
+              expectedCash:
+                $ref: '#/components/schemas/Money'
+              countedCash:
+                $ref: '#/components/schemas/Money'
+              variance:
+                $ref: '#/components/schemas/Money'
+
+    TaxSummaryReport:
+      type: object
+      required: [from, to, currency, lines]
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        branchId:
+          type: string
+          format: uuid
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        lines:
+          type: array
+          items:
+            type: object
+            required: [taxCode, taxableAmount, taxAmount]
+            properties:
+              taxCode:
+                type: string
+              taxableAmount:
+                $ref: '#/components/schemas/Money'
+              taxAmount:
+                $ref: '#/components/schemas/Money'
+
+    FiscalDocumentStatus:
+      type: string
+      enum:
+        - PENDING_SUBMISSION
+        - SUBMITTED
+        - ACCEPTED
+        - REJECTED
+        - FAILED
+        - AWAITING_RECONCILIATION
+
+    RegisterFiscalDeviceRequest:
+      type: object
+      required: [branchId, serialNumber]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        serialNumber:
+          type: string
+        label:
+          type: string
+
+    FiscalDevice:
+      type: object
+      required: [id, branchId, serialNumber, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        serialNumber:
+          type: string
+        label:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, PENDING_REGISTRATION]
+
+    FiscalDocument:
+      type: object
+      required: [id, documentType, status, saleId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        documentType:
+          type: string
+          enum: [INVOICE, CREDIT_NOTE, DEBIT_NOTE]
+        status:
+          $ref: '#/components/schemas/FiscalDocumentStatus'
+        saleId:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        fdmsDocumentId:
+          type: string
+        qrVerification:
+          type: string
+        signaturePresent:
+          type: boolean
+        updatedAt:
+          type: string
+          format: date-time
+
+    FiscalNoteRequest:
+      type: object
+      required: [saleId, clientOperationId, reason]
+      properties:
+        saleId:
+          type: string
+          format: uuid
+        clientOperationId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+          minLength: 1
+        lines:
+          type: array
+          items:
+            type: object
+            required: [productId, quantity]
+            properties:
+              productId:
+                type: string
+                format: uuid
+              quantity:
+                $ref: '#/components/schemas/Quantity'
+
+    FiscalDayRequest:
+      type: object
+      required: [branchId]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        fiscalDeviceId:
+          type: string
+          format: uuid
+          description: Required when the protocol binds the day to a device
+
+    FiscalDaySession:
+      type: object
+      required: [id, branchId, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        fiscalDeviceId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [OPEN, CLOSED]
+        openedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+
+    FiscalHealth:
+      type: object
+      required: [pendingCount, failedCount, adapter]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        adapter:
+          type: string
+          enum: [MOCK, FDMS_TEST, FDMS_LIVE]
+        pendingCount:
+          type: integer
+        failedCount:
+          type: integer
+        openFiscalDay:
+          type: boolean
+
+    SyncBootstrapResponse:
+      type: object
+      required: [deviceId, branchId, configVersion, products, permissions]
+      properties:
+        deviceId:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        configVersion:
+          type: integer
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+        taxConfig:
+          type: object
+          additionalProperties: true
+        permissions:
+          type: array
+          items:
+            type: string
+        branch:
+          $ref: '#/components/schemas/Branch'
+
+    SyncBatchRequest:
+      type: object
+      required: [deviceId, operations]
+      properties:
+        deviceId:
+          type: string
+          format: uuid
+        operations:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SyncOperation'
+
+    SyncOperation:
+      type: object
+      required: [operationId, type, branchId, deviceId, occurredAt, payload]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+          description: Client idempotency key
+        type:
+          type: string
+          enum: [SALE, SHIFT_OPEN, SHIFT_CLOSE, CASH_MOVEMENT, INVENTORY_RECEIPT, INVENTORY_ADJUSTMENT]
+        branchId:
+          type: string
+          format: uuid
+        deviceId:
+          type: string
+          format: uuid
+        occurredAt:
+          type: string
+          format: date-time
+        configVersion:
+          type: integer
+        payload:
+          type: object
+          additionalProperties: true
+          description: Type-specific body (e.g. CommitSaleRequest fields for SALE)
+
+    SyncBatchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncOperationResult'
+
+    SyncOperationResult:
+      type: object
+      required: [operationId, outcome]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum: [ACCEPTED, ALREADY_PROCESSED, REJECTED, AWAITING_REVIEW]
+        serverEntityId:
+          type: string
+          format: uuid
+        detail:
+          type: string
+        code:
+          type: string

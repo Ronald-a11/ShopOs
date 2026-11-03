@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: shopos
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/shopos}
+    username: ${DB_USERNAME:shopos}
+    password: ${DB_PASSWORD:shopos}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+shopos:
+  fiscal:
+    # MOCK for local and CI, FDMS_TEST for staging, FDMS_LIVE only after ZIMRA approval
+    adapter: ${FISCAL_ADAPTER:MOCK}
+  auth:
+    # Outside local/test, AuthSecretValidator requires a strong SHOPOS_JWT_SECRET and secure cookies.
+    jwt-secret: ${SHOPOS_JWT_SECRET:local-dev-only-change-me-to-a-long-random-secret-key}
+    access-token-ttl: ${SHOPOS_ACCESS_TTL:PT15M}
+    refresh-token-ttl: ${SHOPOS_REFRESH_TTL:P7D}
+    refresh-token-ttl-remember: ${SHOPOS_REFRESH_TTL_REMEMBER:P30D}
+    refresh-cookie-name: shopos_refresh
+    refresh-cookie-secure: ${SHOPOS_REFRESH_COOKIE_SECURE:false}

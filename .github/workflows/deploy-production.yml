@@ -1,0 +1,39 @@
+name: Deploy production
+
+# Manual promotion of an image that already passed CI and ran in staging.
+# Only the technical lead may run it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "12-character commit SHA of the image (shown in the CD run summary)"
+        required: true
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Promote to production
+    if: github.actor == 'sairosthedev'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check image exists
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shopos:${SHA}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker manifest inspect "$IMAGE" > /dev/null
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+      # Hosting provider is still an open decision (tech doc §12). Replace with
+      # the real deploy; keep credentials in the "production" environment secrets.
+      # FISCAL_ADAPTER=FDMS_LIVE only after ZIMRA approval and live registration.
+      - run: echo "Promoting $IMAGE to production"
