@@ -1,0 +1,43 @@
+# Shared team stack: Postgres + ShopOS API (frontend bundled in the jar).
+# Run on ONE machine or a cheap VPS. Everyone else only needs the public URL —
+# no Docker, Java, or Postgres on their laptops.
+#
+#   docker compose -f infra/docker-compose.shared.yml up -d --build
+#
+# Then share:
+#   API / Swagger:  http://<host>:8080/swagger-ui.html
+#   Health:         http://<host>:8080/actuator/health
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: shopos
+      POSTGRES_USER: shopos
+      POSTGRES_PASSWORD: shopos
+      TZ: UTC
+    volumes:
+      - shopos-pg-shared:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopos"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/shopos
+      DB_USERNAME: shopos
+      DB_PASSWORD: shopos
+      # Comma-separated browser origins allowed to call the API (Vite default :5173)
+      SHOPOS_CORS_ORIGINS: ${SHOPOS_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  shopos-pg-shared:
