@@ -1,1 +1,18 @@
-.vercel
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.jks
+
+# Personal Claude Code settings
+.claude/settings.local.json

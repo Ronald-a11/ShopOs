@@ -1,0 +1,11 @@
+# The technical lead reviews every change. Schema, security, pipeline and
+# fiscal code are called out so they are never merged without that review.
+*                                   @sairosthedev
+
+/backend/src/main/resources/db/     @sairosthedev
+/backend/src/main/java/zw/miccs/shopos/tenancy/        @sairosthedev
+/backend/src/main/java/zw/miccs/shopos/identity/       @sairosthedev
+/backend/src/main/java/zw/miccs/shopos/fiscalisation/  @sairosthedev
+/.github/                           @sairosthedev
+/Dockerfile                         @sairosthedev
+/infra/                             @sairosthedev

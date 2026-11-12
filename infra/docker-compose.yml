@@ -1,0 +1,22 @@
+# Local development database. Start with:
+#   docker compose -f infra/docker-compose.yml up -d
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: shopos
+      POSTGRES_USER: shopos
+      POSTGRES_PASSWORD: shopos
+      TZ: UTC
+    ports:
+      # Host 5434 avoids clash with a local Postgres already on 5432
+      - "5434:5432"
+    volumes:
+      - shopos-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopos"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  shopos-pg:
